@@ -13,12 +13,12 @@ TARGET_FPS = 500
 FRAME_INTERVAL = 1.0 / TARGET_FPS
 
 # Load Model
-model = YOLO("E:/0CODING/MyProjects/SUB-IP/prj-files/shapeWeights.pt")
+model = YOLO("./shapeWeights.pt")
 
 model.eval()
 # model.to("cuda").half()
 
-input_path = "E:/0CODING/MyProjects/SUB-IP/data/IP/2024-08-31_11.18.34.mp4"
+input_path = "./black-crcl.mp4"
 filename = input_path.split("/")[-1].split(".")[0]
 output_path = f"./outputs/{filename}_out.mp4"
 
@@ -50,12 +50,12 @@ class_counts = defaultdict(int)  # Count of objects by class
 color_palette = None
 last_move_cmds = {}  # {object_id: last_command}
 last_print_time = {}  # {object_id: timestamp}
-DEBOUNCE_TIME = 0.5  # seconds
+DEBOUNCE_TIME = 3 # seconds
 logs = []
 
 
 TAGET_SHAPE = "circle"
-TAGET_COLOR = "red"
+TAGET_COLOR = "blue"
 
 
 def preprocess(frame):
@@ -101,7 +101,7 @@ def add_log(frame, logs):
     for i, msg in enumerate(logs):
         cv2.putText(frame, msg, (10, 30+(i*30)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-def get_move_command(centroid_pt, frame_width, tolerance=20):
+def get_move_command(centroid_pt, frame_width, tolerance=50):
     """
     Generate a simple move command based on the centroid's x-position.
     - centroid_pt: (x, y) of the object
@@ -350,7 +350,7 @@ def draw_object_info(frame):
         prev_time = last_print_time.get(object_id, 0)
         prev_cmd = last_move_cmds.get(object_id)
         
-        if move_cmd != prev_cmd and (now - prev_time > DEBOUNCE_TIME):
+        if move_cmd != prev_cmd or (now - prev_time > DEBOUNCE_TIME):
             if class_name == TAGET_SHAPE and color_name == TAGET_COLOR:
                 msg = f"Object {object_id} ({class_name}, {color_name}): {move_cmd}"
                 print(msg)
