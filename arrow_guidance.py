@@ -13,12 +13,12 @@ last_print_time = 0
 DEBOUNCE_TIME = 0.5  # seconds
 
 # Load YOLO Model
-model = YOLO("E:/0CODING/MyProjects/SUB-IP/prj-files/arrowWeights.pt")
+model = YOLO("E:/0CODING/MyProjects/SUB-IP/trainModel/runs/detect/progressive_training_1_arrow4/weights/best.pt")
 model.eval()
 model.to("cuda").half()
 
 # Open camera (0 = webcam)
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture("E:/0CODING/MyProjects/SUB-IP/data/QT/IMG_0798.MOV")
 if not cap.isOpened():
     print("❌ Error: Could not open camera")
     exit()

@@ -53,12 +53,10 @@ while True:
         cv2.putText(frame, f"{steer_command}",
                     (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-        # Debounce print
-        now = time.time()
-        if steer_command != last_steer_cmd and (now - last_print_time > DEBOUNCE_TIME):
-            print(f"Steering {steer_command} Angle: {steering_angle:.2f} degrees")
-            last_steer_cmd = steer_command
-            last_print_time = now
+        # Debounce storage
+last_steer_cmd = None
+last_print_time = 0
+DEBOUNCE_TIME = 0.5  # seconds
 
     cv2.imshow("Line Following", frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):

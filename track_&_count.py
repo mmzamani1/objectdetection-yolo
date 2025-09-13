@@ -13,7 +13,7 @@ from ultralytics import YOLO
 # Setup serial (change as needed)
 # ser = serial.Serial('/dev/ttyUSB0', 9600, timeout=1)  # Uncomment for Arduino UART
 
-TARGET_FPS = 50
+TARGET_FPS = 500
 FRAME_INTERVAL = 1.0 / TARGET_FPS
 
 # Load Model
@@ -25,7 +25,7 @@ model.to("cuda").half()
 input_path = "E:/0CODING/MyProjects/SUB-IP/data/OBJ-final.mp4"
 
 # Setup Input
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(input_path)
 
 if not cap.isOpened():
     print(f"❌ Error: Could not open video {input_path}")
@@ -44,7 +44,7 @@ DEBOUNCE_TIME = 0.5  # seconds
 
 
 TAGET_SHAPE = "circle"
-TAGET_COLOR = "blue"
+TAGET_COLOR = "red"
 
 
 def preprocess(frame):
