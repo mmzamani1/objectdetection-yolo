@@ -2,12 +2,37 @@ import cv2
 import numpy as np
 import time
 
-cap = cv2.VideoCapture(0)
+input_path = "E:/0CODING/MyProjects/SUB-IP/data/QT/IMG_0798.MOV"
+filename = input_path.split("/")[-1].split(".")[0]
+output_path = f"./outputs/{filename}_out.mp4"
 
-# Debounce storage
+cap = cv2.VideoCapture(input_path)
+
+if not cap.isOpened():
+    print(f"Error: Could not open video {input_path}")
+    exit()
+
+# Get video properties
+fps = int(cap.get(cv2.CAP_PROP_FPS))
+width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+# Prepare VideoWriter
+out = None
+if output_path:
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or 'XVID'
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+# Configs
 last_steer_cmd = None
 last_print_time = 0
-DEBOUNCE_TIME = 0.5  # seconds
+DEBOUNCE_TIME = 3  # seconds
+logs = []
+
+def add_log(frame, logs):
+    for i, msg in enumerate(logs):
+        cv2.putText(frame, msg, (10, 30+(i*30)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
 
 while True:
     ret, frame = cap.read()
@@ -26,7 +51,7 @@ while True:
 
     steering_angle = None
     steer_command = None
-    
+
     if lines is not None:
         # Pick the line closest to the bottom of the frame
         chosen_line = max(lines, key=lambda l: max(l[0][1], l[0][3]))
@@ -48,21 +73,25 @@ while True:
             steer_command = "Right"
         elif 0 <= steering_angle <= 90:
             steer_command = "Left"
-        
-        # Draw steering info
-        cv2.putText(frame, f"{steer_command}",
-                    (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-        # Debounce print
+        # Debounce logging
         now = time.time()
-        if steer_command != last_steer_cmd and (now - last_print_time > DEBOUNCE_TIME):
-            print(f"Steering {steer_command} Angle: {steering_angle:.2f} degrees")
+        if steer_command and (now - last_print_time) > DEBOUNCE_TIME:
+            logs.append(f"Steer: {steer_command}")
             last_steer_cmd = steer_command
             last_print_time = now
 
+    add_log(frame, logs[-5:])
+
     cv2.imshow("Line Following", frame)
+
+    if out:
+        out.write(frame)
+
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
 cap.release()
+if out:
+    out.release()
 cv2.destroyAllWindows()

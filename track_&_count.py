@@ -1,35 +1,45 @@
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, message=".*torch.cuda.amp.autocast.*")
 
-from preproccessing import preprocess_underwater
 
 import torch
 import cv2
 import numpy as np
-import serial  # For UART communication with Arduino (if needed)
 import time
 from collections import defaultdict, deque
 from ultralytics import YOLO
-# Setup serial (change as needed)
-# ser = serial.Serial('/dev/ttyUSB0', 9600, timeout=1)  # Uncomment for Arduino UART
 
-TARGET_FPS = 50
+TARGET_FPS = 500
 FRAME_INTERVAL = 1.0 / TARGET_FPS
 
 # Load Model
 model = YOLO("E:/0CODING/MyProjects/SUB-IP/prj-files/shapeWeights.pt")
 
 model.eval()
-model.to("cuda").half()
+# model.to("cuda").half()
 
-input_path = "E:/0CODING/MyProjects/SUB-IP/data/OBJ-final.mp4"
+input_path = "E:/0CODING/MyProjects/SUB-IP/data/IP/2024-08-31_11.18.34.mp4"
+filename = input_path.split("/")[-1].split(".")[0]
+output_path = f"./outputs/{filename}_out.mp4"
 
 # Setup Input
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(input_path)
 
 if not cap.isOpened():
-    print(f"❌ Error: Could not open video {input_path}")
+    print(f"Error: Could not open video {input_path}")
     exit()
+
+# Get video properties
+fps = int(cap.get(cv2.CAP_PROP_FPS))
+width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+# Prepare VideoWriter
+out = None
+if output_path:
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or 'XVID'
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
 
 # Object counting and tracking variables
 tracked_objects = {}  # {object_id: (class_name, dominant_color, centroid, bbox, last_seen)}
@@ -41,10 +51,11 @@ color_palette = None
 last_move_cmds = {}  # {object_id: last_command}
 last_print_time = {}  # {object_id: timestamp}
 DEBOUNCE_TIME = 0.5  # seconds
+logs = []
 
 
 TAGET_SHAPE = "circle"
-TAGET_COLOR = "blue"
+TAGET_COLOR = "red"
 
 
 def preprocess(frame):
@@ -85,6 +96,10 @@ def preprocess(frame):
 
     return result
 
+
+def add_log(frame, logs):
+    for i, msg in enumerate(logs):
+        cv2.putText(frame, msg, (10, 30+(i*30)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
 def get_move_command(centroid_pt, frame_width, tolerance=20):
     """
@@ -337,7 +352,10 @@ def draw_object_info(frame):
         
         if move_cmd != prev_cmd and (now - prev_time > DEBOUNCE_TIME):
             if class_name == TAGET_SHAPE and color_name == TAGET_COLOR:
-                print(f"Object {object_id} ({class_name}, {color_name}): {move_cmd}")
+                msg = f"Object {object_id} ({class_name}, {color_name}): {move_cmd}"
+                print(msg)
+                logs.append(msg)
+                
             last_move_cmds[object_id] = move_cmd
             last_print_time[object_id] = now
 
@@ -399,8 +417,13 @@ while cap.isOpened():
     # count_text = f"Total objects: {len(tracked_objects)}"
     # cv2.putText(frame, count_text, (10, frame.shape[0] - 10),
     #            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-
+    add_log(frame, logs[-5:])
+    
     cv2.imshow("YOLO Detection with Counting", frame)
+    
+    if out:
+        out.write(frame)
+    
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
@@ -409,9 +432,11 @@ while cap.isOpened():
     time.sleep(sleep_time)
 
 cap.release()
+if out:
+    out.release()
 cv2.destroyAllWindows()
 
 # Print counts
-print("\nFinal object counts:")
-for class_name, count in class_counts.items():
-    print(f"{class_name}: {count}")
+# print("\nFinal object counts:")
+# for class_name, count in class_counts.items():
+#     print(f"{class_name}: {count}")
