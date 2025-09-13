@@ -29,7 +29,7 @@ if output_path:
 # Configs
 last_steer_cmd = None
 last_print_time = 0
-DEBOUNCE_TIME = 3  # seconds
+DEBOUNCE_TIME = 2 # seconds
 logs = []
 
 def add_log(frame, logs):
@@ -102,11 +102,12 @@ def detect_arrows(frame):
 
                         # Debounce printing
                         now = time.time()
-                        if (now - last_print_time > DEBOUNCE_TIME) and (area/(w*h) > 0.03):
-                            logs.append(f"Steer {direction}")
-                            # print(f"Direction: {direction}, Area: {area:.2f}")
-                            last_steer_cmd = direction
-                            last_print_time = now
+                        if area/(w*h) > 0.03:
+                            if last_steer_cmd != direction or (last_steer_cmd == direction and (now - last_print_time) > DEBOUNCE_TIME):
+                                # print(f"Direction: {direction}, Area: {area:.2f}")
+                                logs.append(f"Steer {direction}")
+                                last_steer_cmd = direction
+                                last_print_time = now
 
                         # Draw text on frame
                         cv2.putText(frame, f"{direction}", (cx - 50, cy - 20),
