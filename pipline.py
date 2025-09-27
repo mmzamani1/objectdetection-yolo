@@ -13,14 +13,16 @@ TARGET_FPS = 500
 FRAME_INTERVAL = 1.0 / TARGET_FPS
 
 # Load Model
-model = YOLO("./pipelineWeights.pt")
+model = YOLO("E:/0CODING/MyProjects/SUB-IP/trainModel/runs/detect/progressive_training_1_mypipeline2.02/weights/best.pt")
 
-model.eval()
+# model.eval()
 # model.to("cuda").half()
 
-input_path = "./pipeline1.mp4"
+timestamp = now = time.time()
+
+input_path = "../data/qt/pipeline2.mp4"
 filename = input_path.split("/")[-1].split(".")[0]
-output_path = f"./outputs/{filename}_out.mp4"
+output_path = f"../data/outputs/{filename}_out_{timestamp}.mp4"
 
 # Setup Input
 cap = cv2.VideoCapture(input_path)
@@ -52,11 +54,19 @@ last_move_cmds = {}  # {object_id: last_command}
 last_print_time = {}  # {object_id: timestamp}
 DEBOUNCE_TIME = 0.5  # seconds
 logs = []
-
+FRAME_SKIP = 2
+total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+frame_count =0
 
 TAGET_SHAPE = "pipeline"
 # TAGET_COLOR = "red"
 
+
+def print_progress(current, total, bar_length=30):
+    fraction = current / total
+    filled_length = int(bar_length * fraction)
+    bar = "#" * filled_length + '-' * (bar_length - filled_length)
+    print(f"\rProcessing: |{bar}| {current}/{total} frames", end='')
 
 def preprocess(frame):
     # 1. White balance (compensate color shift)
@@ -94,7 +104,7 @@ def preprocess(frame):
                        [0, -1, 0]])
     result = cv2.filter2D(result, -1, kernel)
 
-    return result
+    return frame
 
 
 def add_log(frame, logs):
@@ -332,7 +342,7 @@ def draw_object_info(frame):
         cv2.rectangle(frame, (x1, y1), (x2, y2), color_bgr, 1)
 
         # Label
-        label = f"ID:{object_id} {class_name} ({color_name})"
+        label = f"ID:{object_id} {class_name}"
         cv2.putText(frame, label, (x1, y1 - 5),
                     font, font_scale, color_bgr, thickness, cv2.LINE_AA)
 
@@ -352,7 +362,7 @@ def draw_object_info(frame):
         
         if move_cmd != prev_cmd and (now - prev_time > DEBOUNCE_TIME):
             if class_name == TAGET_SHAPE:
-                msg = f"Object {object_id} ({class_name}, {color_name}): {move_cmd}"
+                msg = f"Object {object_id} ({class_name}): {move_cmd}"
                 print(msg)
                 logs.append(msg)
                 
@@ -361,82 +371,44 @@ def draw_object_info(frame):
 
 
 
-    # Draw class counts only once
-    # y_offset = 25
-    # for class_name, count in class_counts.items():
-    #     text = f"{class_name}: {count}"
-    #     cv2.putText(frame, text, (10, y_offset),
-    #                 font, 0.6, (0, 0, 255), 1, cv2.LINE_AA)
-    #     y_offset += 20
-
-
-
-
+logs = deque(maxlen=1)  # auto-trims old logs
 
 while cap.isOpened():
-    start_time = time.time()
     ret, frame = cap.read()
     if not ret:
         break
+    
+    frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+    print_progress(frame_idx, total_frames)
+
+    add_log(frame, logs)
+    
+    frame_count += 1
+    if frame_count % FRAME_SKIP != 0:
+        if out:
+            out.write(frame)
+        continue
 
     frame = preprocess(frame)
 
-    # Run YOLO inference
-    results = model(frame, verbose=False)  # returns a Results object
-    detections = results[0].boxes.data.cpu().numpy()  # numpy array: [x1, y1, x2, y2, conf, cls]
+    results = model(frame, verbose=False)
+    detections = results[0].boxes.data.cpu().numpy()
 
-    # Filter detections
-    filtered_detections = []
-    for x1, y1, x2, y2, conf, cls in detections:
-        if conf > MIN_CONFIDENCE:
-            filtered_detections.append((x1, y1, x2, y2, conf, cls))
-
-    # Update tracking and counting
-    update_object_count(filtered_detections, frame)
-
-    # Draw
+    filtered = [(x1,y1,x2,y2,conf,cls) for x1,y1,x2,y2,conf,cls in detections if conf > MIN_CONFIDENCE]
+    update_object_count(filtered, frame)
     draw_object_info(frame)
-
-
-    for *box, conf, cls in filtered_detections:
-        label = model.names[int(cls)]
-        x1, y1, x2, y2 = map(int, box)
-        
-        # Detect color for this detection
-        roi = frame[y1:y2, x1:x2]
-        color_name, _ = detect_dominant_color(roi)
-        
-        # msg = f"{label}:{color_name}:{x1},{y1},{x2},{y2}\n"
-        # print(f"Detected: {msg.strip()}")
-        # ser.write(msg.encode())  # Uncomment if Arduino is connected
-        # if label == 'circle' and color_name == 'yellow':
-        #     print("GOTCHA!!!")
-        
-
-    # Show total count
-    # count_text = f"Total objects: {len(tracked_objects)}"
-    # cv2.putText(frame, count_text, (10, frame.shape[0] - 10),
-    #            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-    add_log(frame, logs[-5:])
+    add_log(frame, logs)
     
-    cv2.imshow("YOLO Detection with Counting", frame)
-    
+    cv2.imshow("YOLO Detections", frame)
+
     if out:
         out.write(frame)
-    
+
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-    elapsed = time.time() - start_time
-    sleep_time = max(0, FRAME_INTERVAL - elapsed)
-    time.sleep(sleep_time)
 
 cap.release()
 if out:
     out.release()
 cv2.destroyAllWindows()
-
-# Print counts
-# print("\nFinal object counts:")
-# for class_name, count in class_counts.items():
-#     print(f"{class_name}: {count}")
