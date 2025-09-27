@@ -9,116 +9,132 @@ import time
 from collections import defaultdict, deque
 from ultralytics import YOLO
 
-TARGET_FPS = 500
-FRAME_INTERVAL = 1.0 / TARGET_FPS
+# ------------------- Config -------------------
+MIN_CONFIDENCE = 0.4
+DEBOUNCE_TIME = 9 # seconds
+FRAME_SKIP = 1
+MAX_DISAPPEARED = 1000
+OBJ_TO_FRAME_RATIO = 0.03
+MAKE_OUTPUT = False
+UN_TARGETED = True
+TAGET_SHAPE = "circle"
+TAGET_COLOR = "blue"
+MISSION = "track" # count track
 
-# Load Model
-model = YOLO("./shapeWeights.pt")
+# ------------------- Load YOLO Model -------------------
+model = YOLO("weights/shapeWeights.pt")
 
-model.eval()
-# model.to("cuda").half()
-
-input_path = "./black-crcl.mp4"
+# ------------------- I/O -------------------
+input_path = "../data/qt/arrow.mp4"
 filename = input_path.split("/")[-1].split(".")[0]
-output_path = f"./outputs/{filename}_out.mp4"
+output_path = f"../data/outputs/{filename}_out_{time.time()}.mp4"
 
-# Setup Input
+# ------------------- Load Input -------------------
 cap = cv2.VideoCapture(input_path)
-
 if not cap.isOpened():
-    print(f"Error: Could not open video {input_path}")
+    print("Error: Could not open camera")
     exit()
 
-# Get video properties
-fps = int(cap.get(cv2.CAP_PROP_FPS))
+# ------------------- Get video properties -------------------
+vid_fps = int(cap.get(cv2.CAP_PROP_FPS))
 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-# Prepare VideoWriter
+# ------------------- Prepare VideoWriter -------------------
 out = None
-if output_path:
+if output_path and MAKE_OUTPUT:
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or 'XVID'
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    out = cv2.VideoWriter(output_path, fourcc, vid_fps, (width, height))
 
-
-# Object counting and tracking variables
+# ------------------- Variables -------------------
 tracked_objects = {}  # {object_id: (class_name, dominant_color, centroid, bbox, last_seen)}
 next_object_id = 0
-MAX_DISAPPEARED = 1000  # Frames to keep an object before considering it gone
-MIN_CONFIDENCE = 0.5  # Minimum confidence for detection
 class_counts = defaultdict(int)  # Count of objects by class
 color_palette = None
 last_move_cmds = {}  # {object_id: last_command}
 last_print_time = {}  # {object_id: timestamp}
-DEBOUNCE_TIME = 3 # seconds
 logs = []
+frame_count = 0
+total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+fps = 0
+logs = deque(maxlen=2) 
+prev_time = time.time()
 
-
-TAGET_SHAPE = "circle"
-TAGET_COLOR = "blue"
-
-
+# ------------------- Functions -------------------
 def preprocess(frame):
-    # 1. White balance (compensate color shift)
-    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
+    """
+    Compensate for blue dominance in clear water.
+    """
+    # Convert to float for manipulation
+    b, g, r = cv2.split(frame.astype(np.float32))
 
-    # Balance channels (keep types consistent)
-    avg_a = np.mean(a)
-    avg_b = np.mean(b)
-    a = a.astype(np.float32)
-    b = b.astype(np.float32)
-    l_float = l.astype(np.float32) / 255.0
+    # 1. Reduce blue slightly, boost red slightly
+    b = b * 0.85
+    r = r * 1.25
 
-    a = a - ((avg_a - 128) * l_float * 1.1)
-    b = b - ((avg_b - 128) * l_float * 1.1)
+    # Clip back to [0,255]
+    b = np.clip(b, 0, 255)
+    r = np.clip(r, 0, 255)
 
-    # Clip back to [0,255] and convert to uint8
-    a = np.clip(a, 0, 255).astype(np.uint8)
-    b = np.clip(b, 0, 255).astype(np.uint8)
+    # Merge channels back
+    result = cv2.merge([b, g, r]).astype(np.uint8)
 
-    lab = cv2.merge([l, a, b])
-    result = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-
-    # 2. Dehaze with CLAHE on LAB L-channel
-    lab = cv2.cvtColor(result, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    cl = clahe.apply(l)
-    limg = cv2.merge([cl, a, b])
-    result = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
-
-    # 3. Sharpening
-    kernel = np.array([[0, -1, 0],
-                       [-1, 5, -1],
-                       [0, -1, 0]])
+    # Optional: mild sharpening
+    kernel = np.array([[0, -0.25, 0],
+                       [-0.25, 2, -0.25],
+                       [0, -0.25, 0]])
     result = cv2.filter2D(result, -1, kernel)
 
     return result
 
-
 def add_log(frame, logs):
-    for i, msg in enumerate(logs):
-        cv2.putText(frame, msg, (10, 30+(i*30)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    if MISSION == 'track':
+        for i, msg in enumerate(logs):
+            cv2.putText(frame, msg, (50, 30+(i*30)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+    else:
+        # Show total count
+        count_text = f"Total objects: {len(tracked_objects)}"
+        cv2.putText(frame, count_text, (10, frame.shape[0] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-def get_move_command(centroid_pt, frame_width, tolerance=50):
+def print_progress(current, total, bar_length=30):
+    fraction = current / total
+    filled_length = int(bar_length * fraction)
+    bar = "#" * filled_length + '-' * (bar_length - filled_length)
+    print(f"\rProcessing: |{bar}| {current}/{total} frames", end='')
+    
+def get_move_command(centroid_pt, frame_width, bbox, frame_shape, tolerance=50):
     """
-    Generate a simple move command based on the centroid's x-position.
-    - centroid_pt: (x, y) of the object
-    - frame_width: width of the frame
-    - tolerance: pixels around center considered "forward"
-    Returns: "left", "right", "forward"
+    Generate a move command based on centroid (left/right/forward)
+    AND bounding box area (closeness).
     """
+    # Direction
     frame_center_x = frame_width // 2
     dx = centroid_pt[0] - frame_center_x
-
     if abs(dx) <= tolerance:
-        return "forward"
+        direction = "forward"
     elif dx > 0:
-        return "right"
+        direction = "right"
     else:
-        return "left"
+        direction = "left"
+        
+    # Closeness
+    x1, y1, x2, y2 = bbox
+    area = (x2 - x1) * (y2 - y1)
+    frame_area = frame_shape[0] * frame_shape[1]
+    area_ratio = area / frame_area
 
+    if area_ratio > OBJ_TO_FRAME_RATIO:
+        distance = "very close"
+    elif area_ratio > OBJ_TO_FRAME_RATIO * 0.75:
+        distance = "close"
+    elif area_ratio > OBJ_TO_FRAME_RATIO * 0.5:
+        distance = "medium"
+    else:
+        distance = "far"
+
+    return direction, f"{distance} ({area_ratio:.3f})"
 
 def centroid(bbox):
     # Calculate centroid from bounding box [x1, y1, x2, y2]
@@ -144,59 +160,42 @@ def get_color_palette():
 
 def detect_dominant_color(roi):
     """
-    Detect the dominant color in a region of interest (ROI).
-    Returns the color name and average BGR values.
+    Detect dominant color in clear, blue-dominated water.
     """
     if roi.size == 0:
         return "unknown", (255, 255, 255)
-    
-    # Convert ROI to HSV
-    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
-    # Define color ranges in HSV
-    color_ranges = {
-        'red': [(0, 50, 20), (10, 255, 255), (170, 50, 20), (180, 255, 255)],
-        'orange': [(11, 50, 20), (25, 255, 255)],
-        'yellow': [(26, 50, 20), (35, 255, 255)],
-        'green': [(36, 50, 20), (85, 255, 255)],
-        'blue': [(86, 50, 20), (125, 255, 255)],
-        'purple': [(126, 50, 20), (150, 255, 255)],
-        'pink': [(160, 50, 80), (180, 150, 255)],
-        'brown': [(10, 100, 20), (20, 255, 200)],
-        'black': [(0, 0, 0), (180, 255, 50)],
-        'white': [(0, 0, 200), (180, 30, 255)],
-        'gray':  [(0, 0, 50), (180, 30, 200)]
-    }
+    # Convert to HSV for hue-based detection
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
 
-    # Count pixels in each range
-    max_pixels = 0
-    dominant_color = "unknown"
+    # Compute mean hue
+    mean_h = np.mean(h)
+    mean_s = np.mean(s)
+    mean_v = np.mean(v)
 
-    for color, ranges in color_ranges.items():
-        mask = None
-        if len(ranges) == 2:  # Single range
-            lower, upper = ranges
-            lower = np.array(lower, dtype=np.uint8)
-            upper = np.array(upper, dtype=np.uint8)
-            mask = cv2.inRange(hsv_roi, lower, upper)
-        elif len(ranges) == 4:  # Two ranges (for red)
-            lower1, upper1, lower2, upper2 = ranges
-            lower1, upper1 = np.array(lower1), np.array(upper1)
-            lower2, upper2 = np.array(lower2), np.array(upper2)
-            mask1 = cv2.inRange(hsv_roi, lower1, upper1)
-            mask2 = cv2.inRange(hsv_roi, lower2, upper2)
-            mask = cv2.bitwise_or(mask1, mask2)
+    # Simple thresholds for dominant color
+    if mean_v < 50:
+        color = "black"
+    elif mean_s < 30:
+        color = "gray"
+    elif mean_h < 10 or mean_h > 160:
+        color = "red"
+    elif 10 <= mean_h < 25:
+        color = "orange"
+    elif 25 <= mean_h < 35:
+        color = "yellow"
+    elif 35 <= mean_h < 85:
+        color = "green"
+    elif 85 <= mean_h < 130:
+        color = "blue"
+    elif 130 <= mean_h < 160:
+        color = "purple"
+    else:
+        color = "unknown"
 
-        count = cv2.countNonZero(mask)
-        if count > max_pixels:
-            max_pixels = count
-            dominant_color = color
-
-    # Average BGR for visualization (not used in classification)
-    avg_bgr = np.mean(roi, axis=(0, 1)).astype(int)
-
-    return dominant_color, tuple(avg_bgr)
-
+    avg_bgr = tuple(np.mean(roi, axis=(0, 1)).astype(int))
+    return color, avg_bgr
 
 def update_object_count(detections, frame):
     global next_object_id, tracked_objects, class_counts, color_palette
@@ -340,7 +339,7 @@ def draw_object_info(frame):
         cv2.circle(frame, centroid_pt, 3, color_bgr, -1)
 
         # ---- Generate move command ----
-        move_cmd = get_move_command(centroid_pt, frame_width)
+        move_cmd, distance = get_move_command(centroid_pt, frame_width, bbox, frame.shape)
         cv2.putText(frame, f"Move: {move_cmd}", (x1, y2 + 15),
                     font, font_scale, (0,0,255), 1, cv2.LINE_AA)
 
@@ -351,34 +350,50 @@ def draw_object_info(frame):
         prev_cmd = last_move_cmds.get(object_id)
         
         if move_cmd != prev_cmd or (now - prev_time > DEBOUNCE_TIME):
-            if class_name == TAGET_SHAPE and color_name == TAGET_COLOR:
-                msg = f"Object {object_id} ({class_name}, {color_name}): {move_cmd}"
-                print(msg)
+            if (class_name == TAGET_SHAPE and color_name == TAGET_COLOR) or UN_TARGETED:
+                msg = f"Object {object_id} ({class_name}, {color_name}): {move_cmd}, {distance}"
+                # print(msg)
                 logs.append(msg)
                 
             last_move_cmds[object_id] = move_cmd
             last_print_time[object_id] = now
 
+    if MISSION == 'count':
+        # Draw class counts
+        y_offset = 25
+        for class_name, count in class_counts.items():
+            text = f"{class_name}: {count}"
+            cv2.putText(frame, text, (10, y_offset),
+                        font, 0.6, (0, 0, 255), 1, cv2.LINE_AA)
+            y_offset += 20
 
-
-    # Draw class counts only once
-    # y_offset = 25
-    # for class_name, count in class_counts.items():
-    #     text = f"{class_name}: {count}"
-    #     cv2.putText(frame, text, (10, y_offset),
-    #                 font, 0.6, (0, 0, 255), 1, cv2.LINE_AA)
-    #     y_offset += 20
-
-
-
-
-
+# ------------------- Main Loop -------------------
 while cap.isOpened():
     start_time = time.time()
     ret, frame = cap.read()
     if not ret:
         break
 
+    # calculate fps
+    current_time = time.time()
+    fps = 1.0 / (current_time - prev_time)
+    prev_time = current_time
+
+    # Draw FPS on frame
+    cv2.putText(frame, f"FPS: {fps:.2f}", (width - 180, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+    frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+    print_progress(frame_idx, total_frames)
+
+    
+    frame_count += 1
+    if frame_count % FRAME_SKIP != 0:
+        if out:
+            add_log(frame, logs)
+            out.write(frame)
+        continue
+        
     frame = preprocess(frame)
 
     # Run YOLO inference
@@ -386,17 +401,15 @@ while cap.isOpened():
     detections = results[0].boxes.data.cpu().numpy()  # numpy array: [x1, y1, x2, y2, conf, cls]
 
     # Filter detections
-    filtered_detections = []
-    for x1, y1, x2, y2, conf, cls in detections:
-        if conf > MIN_CONFIDENCE:
-            filtered_detections.append((x1, y1, x2, y2, conf, cls))
+    filtered_detections = [(x1, y1, x2, y2, conf, cls)
+                           for x1, y1, x2, y2, conf, cls in detections
+                           if conf > MIN_CONFIDENCE]
 
     # Update tracking and counting
     update_object_count(filtered_detections, frame)
 
     # Draw
     draw_object_info(frame)
-
 
     for *box, conf, cls in filtered_detections:
         label = model.names[int(cls)]
@@ -411,13 +424,8 @@ while cap.isOpened():
         # ser.write(msg.encode())  # Uncomment if Arduino is connected
         # if label == 'circle' and color_name == 'yellow':
         #     print("GOTCHA!!!")
-        
-
-    # Show total count
-    # count_text = f"Total objects: {len(tracked_objects)}"
-    # cv2.putText(frame, count_text, (10, frame.shape[0] - 10),
-    #            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-    add_log(frame, logs[-5:])
+    
+    add_log(frame, logs)
     
     cv2.imshow("YOLO Detection with Counting", frame)
     
@@ -427,16 +435,13 @@ while cap.isOpened():
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-    elapsed = time.time() - start_time
-    sleep_time = max(0, FRAME_INTERVAL - elapsed)
-    time.sleep(sleep_time)
-
 cap.release()
 if out:
     out.release()
 cv2.destroyAllWindows()
 
 # Print counts
-# print("\nFinal object counts:")
-# for class_name, count in class_counts.items():
-#     print(f"{class_name}: {count}")
+if MISSION == 'count':
+    print("\nFinal object counts:")
+    for class_name, count in class_counts.items():
+        print(f"{class_name}: {count}")
