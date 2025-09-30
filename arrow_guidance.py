@@ -5,6 +5,7 @@ from ultralytics import YOLO
 import math
 from collections import deque
 import pytesseract
+import re
 
 # ------------------- Config -------------------
 MIN_CONFIDENCE = 0.4
@@ -13,7 +14,7 @@ FRAME_SKIP = 1
 MAKE_OUTPUT = False
 OBJ_TO_FRAME_RATIO = 0.03
 ARROW_COUNT = 3
-OCR_ENABLED = True
+OCR_ENABLED = False
 
 # ------------------- Load YOLO Model -------------------
 model = YOLO("weights/myarrow.pt")
@@ -24,7 +25,7 @@ filename = input_path.split("/")[-1].split(".")[0]
 output_path = f"../data/outputs/{filename}_out_{time.time()}.mp4"
 
 # ------------------- Load Input -------------------
-cap = cv2.VideoCapture(input_path)
+cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     print("Error: Could not open camera")
     exit()
@@ -143,28 +144,60 @@ def detect_arrows(frame):
 
     return frame, detected_dir
 
-# def read_text_from_roi(roi):
-#     """
-#     Performs OCR on a cropped ROI.
-#     roi: BGR image (numpy array)
-#     Returns detected text
-#     """
-#     # Convert to grayscale
-#     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+def read_text_from_roi(roi):
+    """
+    Performs OCR on a cropped ROI.
+    roi: BGR image (numpy array)
+    Returns detected text
+    """
+    # Convert to grayscale
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     
-#     # Optional: thresholding to improve OCR
-#     _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Optional: thresholding to improve OCR
+    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-#     # OCR
-#     text = pytesseract.image_to_string(thresh, config='--psm 6')  # PSM 6 = Assume a single uniform block of text
-#     text = text.strip()
-#     return text
+    # OCR
+    text = pytesseract.image_to_string(thresh, config='--psm 6')  # PSM 6 = Assume a single uniform block of text
+    text = text.strip()
+    return text
+
+def process_ocr_text(text):
+    """
+    Check if OCR text is a math expression.
+    If yes -> evaluate and return result.
+    If not -> return text itself.
+    """
+    # Clean text (remove spaces, newlines)
+    expr = text.replace(" ", "").replace("\n", "")
+
+    # Regex: only allow digits, + - * / ^ ( )
+    if re.fullmatch(r"[0-9\+\-\*/\^\(\)\.]+", expr):
+        try:
+            # Replace ^ with ** for Python power
+            expr = expr.replace("^", "**")
+            result = eval(expr, {"__builtins__": {}})
+            return f"{text} = {result}"
+        except Exception:
+            return text  # If eval fails, return as plain text
+    else:
+        return text
 
 # ------------------- Main Loop -------------------
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
         break
+    
+    if len(logs) == ARROW_COUNT:
+        OCR_ENABLED = True
+    
+    if OCR_ENABLED:
+        text = read_text_from_roi(frame)
+        processed_text = process_ocr_text(text)
+
+        cv2.putText(annotated_frame, processed_text, (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (159, 255, 255), 2)
+        print(processed_text)  # also log in console
     
     # calculate fps
     current_time = time.time()
@@ -228,14 +261,6 @@ while cap.isOpened():
     
     
     
-    # if len(logs) == ARROW_COUNT:
-    #     OCR_ENABLED = True
-    
-    # if OCR_ENABLED:
-    #     text = read_text_from_roi(frame)
-
-    # cv2.putText(annotated_frame, text, (50, 50),
-    #                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (159, 255, 255), 2)
 
     # Optional display for debugging
     cv2.imshow("Filtered YOLO Detections", annotated_frame)
